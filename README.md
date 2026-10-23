@@ -1,10 +1,14 @@
-# Registration Payment Reconciliation
+# Recovering paid registrations after missed payment notifications
 
-A runnable reconstruction of a production recovery workflow: **the customer paid, the payment notification was missed, and registration remained pending.** A scheduled worker independently verifies payment and completes registration without generating duplicate passes.
+A customer could pay successfully through Worldline India while their registration remained pending in our database. Their visitor details existed, but their pass had not been generated.
 
-Built by Jasper Nathaniel as an engineering case study for backend and data-engineering interviews.
+During my work at Showbay, I implemented cron-based reconciliation that checked older pending orders against the gateway and completed registration for verified payments. The recovery covered approximately **5,000 registrations associated with ₹2 crore+ in successful payments**.
 
-## Start here
+This repository reconstructs that workflow with synthetic data. It demonstrates missed-notification recovery, atomic order/pass updates, and safe repeated processing. Production figures are my estimates; the repository's test results are reported separately. The explicit locking, leases and audit records are reconstruction choices.
+
+## See it work
+
+With Python 3.12:
 
 ```bash
 python -m venv .venv
@@ -14,115 +18,91 @@ pip install --no-deps -e .
 python -m reconcile.walkthrough
 ```
 
-Python 3.12 is required. The walkthrough starts two local HTTP services, uses temporary synthetic databases, demonstrates recovery and a delayed callback, checks the results, and shuts down. No merchant account, credentials, or real payment is needed.
+The walkthrough starts two local HTTP services with temporary databases and shuts them down when finished. No merchant account or real payment is needed.
 
-Expected result:
+| Step | Expected result |
+|---|---|
+| Payment succeeds; notification is omitted | Order remains `ORDER_PENDING`; no pass exists |
+| Reconciliation runs | Order becomes `ORDER_PAID`; one pass is created |
+| Reconciliation runs again | No further changes |
+| Delayed callback arrives | Returns `already_confirmed`; pass count stays at one |
 
-```json
-{
-  "before": "ORDER_PENDING",
-  "first_run": {"confirmed": 1},
-  "second_run": {},
-  "delayed_callback": {"outcome": "already_confirmed"},
-  "after": {
-    "orders_by_status": {"ORDER_PAID": 1},
-    "passes": 1,
-    "confirmed_amount_paise": 400000
-  }
-}
-```
-
-## The incident this demonstrates
-
-Registration stored an order and visitor details before payment. Normally, a successful payment notification triggered confirmation and pass creation. When that notification was missed, paid registrations stayed pending. An existing cron-based recovery job checked older pending transactions with Worldline India and completed registration.
-
-**Reported production impact:** approximately **5,000 registrations associated with ₹2 crore+ in successful payments**, as recalled by the author. This is not independently audited by this repository. The funds had already been paid; the recovery concerned registration confirmation and pass generation, not recovered lost funds or new revenue.
-
-This is newly written demonstration code, not Showbay source code or a production database export. It uses synthetic people and payments. Table names and relationships were informed by prior SQL references. Transaction boundaries, leases, uniqueness constraints, tests and audit records are explicit reconstruction choices, not claims about the original implementation.
-
-## How it works
+## System flow
 
 ```mermaid
 flowchart TD
-    A["Registration API"] --> B["Pending order and visitor rows"]
-    C["Payment callback"] --> D["Verify hash and query gateway"]
-    E["Cron worker"] --> F["Select and claim aged pending order"]
-    F --> D
-    D --> G["Shared confirmation function"]
-    G --> H["One database transaction"]
-    H --> I["ORDER_PAID and linked pass rows"]
-    H --> J["Payment-check audit record"]
+    A["Registration API"] --> B["Pending order and visitor records"]
+    C["Signed callback"] --> D["Verify callback hash"]
+    D --> F["Query gateway and validate result"]
+    E["Cron claims aged pending orders"] --> F
+    F --> G["Shared confirmation function"]
+    G --> H["One transaction: paid order, passes, audit"]
 ```
 
-1. Persist an order, a unique merchant payment reference, and its visitors.
-2. A callback normally starts verification. Cron provides an independent recovery path.
-3. Query the gateway **outside** a database transaction.
-4. Check merchant, reference, expected amount and payment status.
-5. Lock the order and perform status, pass and audit writes in one transaction.
-6. Repeat notifications return the existing confirmation. Pending or unknown results do not generate passes.
+The registration is stored before payment. The normal callback and the recovery worker both use the same confirmation function. That function connects orders to visitors through `visitor_table.order_id`, then creates passes through `visitor_pass_table.visitor_id` and `conference_id`.
 
-No seat limit or reservation TTL is involved. Registration age decides when to check payment; it does not decide whether payment failed.
+## Engineering decisions
 
-## Worldline contract
+| Choice | Reason |
+|---|---|
+| Cron checks older pending orders | Gives the normal notification flow time to finish and provides independent recovery |
+| Query the gateway using the stored merchant reference | An absent notification leaves payment uncertain |
+| Match merchant, reference and amount | A success result must belong to the expected registration |
+| Share confirmation logic | Callback and cron apply identical rules |
+| Commit status, pass and audit writes together | A crash cannot commit only part of a new confirmation |
+| Lock the order and enforce unique passes | Repeated or concurrent processing preserves the existing result |
+| Claim work with expiring leases | Another run can recover work after a worker crash |
 
-The implementation is informed by [Worldline India Checkout documentation](https://www.paynimo.com/paynimocheckout/docs/), reviewed on 23 October 2026. It models **Offline Verification, request type `O`**, and the documented signed Checkout callback format. It does not use mandate `TSI` APIs.
+Gateway calls happen outside database transactions. Pending or unknown results are retried; mismatches and repeatedly unresolved payments require review. No reservation TTL is needed for this registration flow.
 
-Read [the integration notes](docs/worldline-contract.md) before interpreting the simulator as a provider integration. Live Worldline endpoints are deliberately disabled. No actual Worldline sandbox or production account was exercised.
+## Evidence
 
-## Database
+[Passing SQLite and PostgreSQL CI run](https://github.com/Jappynathaniel/payment-reconciliation-demo/actions/runs/39936210072).
 
-The PostgreSQL deployment uses these relationships:
+- **30 tests** cover missing and duplicate callbacks, concurrent confirmation, crash rollback, worker recovery, invalid evidence and per-order gateway failures.
+- **Real HTTP walkthrough** demonstrates recovery and a harmless delayed callback against local services.
+- **5,000 synthetic orders** produced exactly 5,000 passes; a repeated run made no changes.
 
-```mermaid
-erDiagram
-    ORDER_TABLE ||--|{ VISITOR_TABLE : contains
-    VISITOR_TABLE ||--o{ VISITOR_PASS_TABLE : receives
-    CONFERENCE ||--o{ VISITOR_TABLE : registers
-    CONFERENCE ||--o{ VISITOR_PASS_TABLE : defines
-```
+The synthetic run took **35.1 seconds using SQLite and mocked HTTP responses**. It excludes gateway latency and rate limits; it is not a production throughput measurement. [Recorded benchmark](docs/benchmark-result.json) · [Validation details](docs/validation.md).
 
-- `visitor_table.order_id` connects a visitor to an order.
-- `visitor_pass_table.visitor_id` and `conference_id` connect passes to visitors and conferences.
-- The demo supports multiple visitors per order and one pass per visitor/conference. This cardinality is a reconstruction assumption.
-- JSON fields preserve the earlier `visitor_data` and `pass_data` pattern. Amounts and operational status are typed columns.
-- `merchant_reference` separates our order ID from the provider-facing reference.
-
-[PostgreSQL DDL](docs/schema.sql) · [Design decisions](docs/design.md)
-
-## Run with PostgreSQL
-
-```bash
-docker compose up --build -d db gateway api
-docker compose exec api python -m reconcile.cli init-db
-docker compose exec api python -m reconcile.cli demo --callback-url http://127.0.0.1:8000/callbacks/worldline
-docker compose exec api python -m reconcile.cli report
-```
-
-Wait for the API at <http://127.0.0.1:8000/health> before running commands. Interactive API documentation: <http://127.0.0.1:8000/docs>.
-
-Run one reconciliation batch:
-
-```bash
-docker compose exec api python -m reconcile.cli reconcile --limit 50
-```
-
-The example cron configuration is in [deploy/cron.example](deploy/cron.example). The optional `scheduled` Compose profile uses a simple 60-second loop for local convenience; it is not cron. The production case used cron.
-
-## Verification
+Run the checks:
 
 ```bash
 python -m pytest -q
 python -m reconcile.benchmark --orders 5000
 ```
 
-Tests exercise missing callbacks, concurrent confirmation, concurrent work claiming, crash rollback, lease recovery, pending results, mismatched evidence, malformed responses, retries and duplicate callbacks. See [validation results](docs/validation.md).
+## Read the case study
 
-The synthetic benchmark exercises the actual worker/database path against an in-process mocked HTTP transport. It measures no real gateway throughput. [Recorded result](docs/benchmark-result.json).
+[**When payment succeeded but registration stayed pending**](docs/case-study.md) explains the original failure, recovery flow, tradeoffs and reconstruction evidence.
 
-For PostgreSQL tests, provision a **disposable** database and set `TEST_DATABASE_URL`. Tests drop the project's tables in that database. GitHub Actions is configured to run both SQLite and PostgreSQL tests; publishing the repository does not imply CI has passed.
+[Design details](docs/design.md) · [Database schema](docs/schema.sql) · [Three-minute interview walkthrough](docs/recruiter-walkthrough.md).
 
-## Scope
+## PostgreSQL and scheduling
 
-This repository demonstrates payment-status reconciliation and relational consistency. It does not reconcile bank settlements, create charges, issue refunds, send emails, render QR assets, or implement a checkout UI. A pass is a durable database record; delivery is a separate concern.
+```bash
+docker compose up --build -d db gateway api
+```
 
-Local endpoints are unauthenticated and synthetic. Compose binds HTTP ports to loopback. Do not expose this demonstration as a public payment service. Production adaptation requires the merchant-specific integration contract, authentication/access control, rate limits, monitoring, retention policy, and verified account configuration.
+Wait for <http://127.0.0.1:8000/health>, then run:
+
+```bash
+docker compose exec api python -m reconcile.cli demo --callback-url http://127.0.0.1:8000/callbacks/worldline
+docker compose exec api python -m reconcile.cli report
+```
+
+API documentation: <http://127.0.0.1:8000/docs>. For one recovery batch:
+
+```bash
+docker compose exec api python -m reconcile.cli reconcile --limit 50
+```
+
+See [the cron example](deploy/cron.example) and [worker wrapper](deploy/run-reconciliation.sh). Adjust paths and make the wrapper executable before installing it. The optional `scheduled` Compose profile uses a 60-second loop for local convenience. The original workflow used cron.
+
+## Integration boundaries
+
+The simulator follows Worldline India Checkout's **Offline Verification (`O`)** contract and documented signed callback format. See [Worldline documentation](https://www.paynimo.com/paynimocheckout/docs/) and [integration notes](docs/worldline-contract.md).
+
+This is newly written demonstration code with synthetic records. Live Worldline requests are disabled. Merchant-specific access, enquiry limits and date-lookup behaviour still require verification before a real integration.
+
+A pass is a database record in this version. Email delivery, QR rendering, refunds and bank-settlement reconciliation are outside its scope. Local endpoints are unauthenticated and bound to loopback; the demo is not a public payment service. PostgreSQL tests pass in CI; Docker Compose startup has not been separately validated.
