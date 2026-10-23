@@ -1,0 +1,43 @@
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: reconciliation
+      POSTGRES_USER: demo
+      POSTGRES_PASSWORD: local-demo-only
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U demo -d reconciliation"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+  gateway:
+    build: .
+    command: uvicorn reconcile.gateway:app --host 0.0.0.0 --port 8001
+    ports: ["127.0.0.1:8001:8001"]
+    environment:
+      SIMULATOR_DATABASE_URL: sqlite:////data/gateway.db
+    volumes:
+      - gateway-data:/data
+  api:
+    build: .
+    ports: ["127.0.0.1:8000:8000"]
+    environment: &app-environment
+      DATABASE_URL: postgresql+psycopg://demo:local-demo-only@db:5432/reconciliation
+      GATEWAY_URL: http://gateway:8001/api/paynimoV2.req
+    depends_on:
+      db: {condition: service_healthy}
+      gateway: {condition: service_started}
+  # Optional local scheduler: docker compose --profile scheduled up -d
+  # This timer is for Compose convenience; deploy/cron.example uses actual cron.
+  scheduler:
+    build: .
+    command: python -m reconcile.cli schedule
+    profiles: [scheduled]
+    environment: *app-environment
+    depends_on:
+      api: {condition: service_started}
+volumes:
+  postgres-data:
+  gateway-data:
