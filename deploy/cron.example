@@ -1,0 +1,5 @@
+# Example only: install explicitly with crontab after adjusting absolute paths.
+# A wrapper must export DATABASE_URL, GATEWAY_URL, MERCHANT_ID, CALLBACK_SALT
+# from a protected environment file before executing Python. Never commit real keys.
+# flock is an optimization; DB leases protect records if runs still overlap.
+* * * * * /usr/bin/flock -n /tmp/registration-reconcile.lock /absolute/path/run-reconciliation.sh >> /absolute/path/reconciliation.log 2>&1
