@@ -8,15 +8,14 @@ Run date: 23 October 2026. Python 3.12.14 in the build environment.
 - Real HTTP walkthrough against two local Uvicorn processes: missed callback recovered, one pass created, rerun empty, delayed callback returned `already_confirmed`.
 - Synthetic 5,000-order reconciliation run: all confirmed, exactly 5,000 passes, unchanged second run. Elapsed time approximately 35.1 seconds; see the machine-readable result for details.
 - PostgreSQL schema was compiled from the SQLAlchemy models.
+- GitHub Actions run [39936210072](https://github.com/Jappynathaniel/payment-reconciliation-demo/actions/runs/39936210072) passed both SQLite and PostgreSQL test stages, including transaction and concurrency tests, on 23 October 2026.
 
 The benchmark used SQLite and `httpx.MockTransport`; it excluded network latency and real provider limits. It is evidence of the tested implementation path, not production capacity or Worldline performance.
 
-## Configured but not executed here
+## Not validated
 
-- PostgreSQL runtime/concurrency tests: CI service and `TEST_DATABASE_URL` support are included. A local PostgreSQL server was unavailable in the build environment.
 - Docker Compose build/start: Docker was unavailable in the build environment.
 - Real Worldline sandbox/production transactions: deliberately disabled; no merchant account used.
-- GitHub Actions: only a completed remote run can establish CI status.
 
 ## Test scope
 
