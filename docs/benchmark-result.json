@@ -1,1 +1,24 @@
-{}
+{
+  "measured_at_utc": "2026-10-23T08:31:10.495833+00:00",
+  "python": "3.12.14",
+  "platform": "Linux-6.18.55-x86_64-with-glibc2.39",
+  "database": "SQLite temporary file",
+  "gateway_transport": "httpx.MockTransport; zero network latency",
+  "synthetic_orders": 5000,
+  "visitors_per_order": 1,
+  "worker_concurrency": 1,
+  "elapsed_seconds": 35.073,
+  "orders_per_second": 142.56,
+  "first_run": {
+    "confirmed": 5000
+  },
+  "second_run": {},
+  "final": {
+    "orders_by_status": {
+      "ORDER_PAID": 5000
+    },
+    "passes": 5000,
+    "confirmed_amount_paise": 2000000000
+  },
+  "limitation": "Local synthetic DB benchmark; excludes source latency, real gateway limits and PostgreSQL performance"
+}

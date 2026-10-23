@@ -1,0 +1,20 @@
+{
+  "scenario": "synthetic missing callback",
+  "order_id": "451ba29c-031c-4afa-a3a5-4ee5c6b599f8",
+  "before": "ORDER_PENDING",
+  "first_run": {
+    "confirmed": 1
+  },
+  "second_run": {},
+  "delayed_callback": {
+    "outcome": "already_confirmed"
+  },
+  "after": {
+    "orders_by_status": {
+      "ORDER_PAID": 1
+    },
+    "passes": 1,
+    "confirmed_amount_paise": 400000
+  },
+  "transport": "actual HTTP to two local uvicorn processes"
+}
